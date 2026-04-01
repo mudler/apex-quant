@@ -1,0 +1,17 @@
+{
+  "model": "Qwen3.5-35B-A3B-APEX-Mini",
+  "size_gb": 12.2,
+  "perplexity": 7.0877,
+  "ppl_error": 0.04591,
+  "kl_mean": 0.086998,
+  "kl_max": 5.570984,
+  "kl_99_9": 2.525252,
+  "kl_median": 0.040037,
+  "hellaswag": 81.00000000,
+  "winogrande": 75.5000,
+  "mmlu": 41.2791,
+  "arc_challenge": 57.1906,
+  "truthfulqa": 36.7197,
+  "pp512_ts": 1944.33,
+  "tg128_ts": 74.39
+}

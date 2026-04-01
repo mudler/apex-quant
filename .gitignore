@@ -1,7 +1,7 @@
 *.bin
 *.gguf
 *.log
-benchmark_results/
 __pycache__/
 *.pyc
 .venv/
+texts/

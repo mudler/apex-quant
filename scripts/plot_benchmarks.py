@@ -45,6 +45,8 @@ DISPLAY_NAMES = {
     "Qwen3.5-35B-A3B-UD-Q4_K_L":           "Unsloth Q4_K_L (18.8 GB)",
     "Qwen_Qwen3.5-35B-A3B-IQ2_M":          "bartowski IQ2_M (11.3 GB)",
     "Qwen_Qwen3.5-35B-A3B-Q3_K_M":         "bartowski Q3_K_M (15.1 GB)",
+    "Qwen3.5-35B-A3B-UD-Q4_K_XL":          "Unsloth UD-Q4_K_XL (20.7 GB)",
+    "Qwen3.5-35B-A3B-Q5_K_S":              "Q5_K_S (23.1 GB)",
 }
 
 # Models to include in plots -- skip any model key not listed here
@@ -60,6 +62,8 @@ CATEGORY_MAP = {
     "Qwen3.5-35B-A3B-UD-Q4_K_L":           "external",
     "Qwen_Qwen3.5-35B-A3B-IQ2_M":          "external",
     "Qwen_Qwen3.5-35B-A3B-Q3_K_M":         "external",
+    "Qwen3.5-35B-A3B-UD-Q4_K_XL":          "external",
+    "Qwen3.5-35B-A3B-Q5_K_S":              "baseline",
     "Qwen3.5-35B-A3B-APEX-I-Quality":      "apex",
     "Qwen3.5-35B-A3B-APEX-I-Balanced":     "apex",
     "Qwen3.5-35B-A3B-APEX-I-Compact":      "apex",

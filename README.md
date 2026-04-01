@@ -1,13 +1,13 @@
 # APEX -- Adaptive Precision for EXpert Models
 
-**Brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team** -- the creators of the free, open-source OpenAI-compatible API for running AI locally.
+**Brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team** -- the creators of LocalAI the open-source AI engine that runs any model - LLMs, vision, voice, image, video - on any hardware. No GPU required.
 
 [![Paper](https://img.shields.io/badge/Technical_Report-PDF-blue)](paper/APEX_Technical_Report.pdf)
 [![Models](https://img.shields.io/badge/HuggingFace-Models-yellow)](https://huggingface.co/mudler/Qwen3.5-35B-A3B-APEX-GGUF)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![LocalAI](https://img.shields.io/badge/LocalAI-Run_Locally-orange)](https://github.com/mudler/LocalAI)
 
-**A novel MoE-aware mixed-precision quantization technique for llama.cpp**
+**A novel MoE-aware mixed-precision quantization technique for [llama.cpp](https://github.com/ggerganov/llama.cpp)**
 
 *Beats Q8_0 perplexity at half the size -- and even beats F16.* APEX outperforms Unsloth Dynamic 2.0 (UD) quantizations on perplexity, HellaSwag, and inference speed while being **2x smaller**: APEX I-Quality (21.3 GB) achieves PPL 6.552 and 83.5% HellaSwag vs Unsloth UD-Q8_K_XL (45.3 GB) at PPL 6.536 and 82.5% HellaSwag. At the consumer tier, APEX Mini (12.2 GB) beats bartowski IQ2_M on every metric.
 
@@ -233,7 +233,7 @@ APEX Mini + TurboQuant enables running a 35B MoE model at 12 GB with 8K+ context
 
 ## Credits
 
-APEX is brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team -- the creators of the free, open-source OpenAI-compatible API for running AI locally.
+APEX is brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team -- the creators of LocalAI the open-source AI engine that runs any model - LLMs, vision, voice, image, video - on any hardware. No GPU required.
 
 Developed through human-driven, AI-assisted research, systematically exploring MoE quantization strategies across 25+ experiments. Built on [llama.cpp](https://github.com/ggerganov/llama.cpp) by Georgi Gerganov and contributors. Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
 

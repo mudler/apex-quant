@@ -1,0 +1,17 @@
+{
+  "model": "Qwen_Qwen3.5-35B-A3B-IQ2_M",
+  "size_gb": 11.3,
+  "perplexity": 7.3029,
+  "ppl_error": 0.04735,
+  "kl_mean": 0.111304,
+  "kl_max": 6.074130,
+  "kl_99_9": 2.795000,
+  "kl_median": 0.053393,
+  "hellaswag": 80.25000000,
+  "winogrande": 74.0000,
+  "mmlu": 39.5995,
+  "arc_challenge": 56.1873,
+  "truthfulqa": 35.0061,
+  "pp512_ts": 1969.64,
+  "tg128_ts": 76.24
+}

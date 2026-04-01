@@ -1,0 +1,16 @@
+{
+  "model": "q8_0",
+  "size_gb": 34.4,
+  "perplexity": 6.5327,
+  "kl_mean": 0.00458,
+  "kl_max": 14.709424,
+  "kl_99_9": 0.180788,
+  "kl_median": 0.001773,
+  "hellaswag": 83.0,
+  "winogrande": 75.25,
+  "mmlu": 41.2145,
+  "arc_challenge": 57.8595,
+  "truthfulqa": 37.6989,
+  "pp512_ts": 1867.85,
+  "tg128_ts": 52.53
+}

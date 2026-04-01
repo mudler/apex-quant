@@ -1,0 +1,17 @@
+{
+  "model": "Qwen3.5-35B-A3B-APEX-I-Compact",
+  "size_gb": 16.1,
+  "perplexity": 6.6691,
+  "ppl_error": 0.04239,
+  "kl_mean": 0.033150,
+  "kl_max": 5.501992,
+  "kl_99_9": 1.060009,
+  "kl_median": 0.015125,
+  "hellaswag": 81.75000000,
+  "winogrande": 75.0000,
+  "mmlu": 41.7313,
+  "arc_challenge": 55.5184,
+  "truthfulqa": 37.9437,
+  "pp512_ts": 1981.15,
+  "tg128_ts": 69.81
+}

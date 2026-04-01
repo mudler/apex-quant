@@ -1,0 +1,16 @@
+{
+  "model": "f16",
+  "size_gb": 64.6,
+  "perplexity": 6.5371,
+  "kl_mean": null,
+  "kl_max": null,
+  "kl_99_9": null,
+  "kl_median": null,
+  "hellaswag": 82.50000000,
+  "winogrande": 74.5000,
+  "mmlu": 41.5375,
+  "arc_challenge": 56.8562,
+  "truthfulqa": 37.2093,
+  "pp512_ts": 809.47,
+  "tg128_ts": 30.40
+}

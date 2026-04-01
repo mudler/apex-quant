@@ -1,0 +1,16 @@
+{
+  "model": "unsloth_q8_k_xl",
+  "size_gb": 45.3,
+  "perplexity": 6.536,
+  "kl_mean": 0.002464,
+  "kl_max": 4.363596,
+  "kl_99_9": 0.096262,
+  "kl_median": 0.000955,
+  "hellaswag": 82.5,
+  "winogrande": 74.75,
+  "mmlu": 41.2791,
+  "arc_challenge": 57.8595,
+  "truthfulqa": 38.0661,
+  "pp512_ts": 1355.01,
+  "tg128_ts": 36.4
+}
