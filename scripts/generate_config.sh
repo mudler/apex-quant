@@ -19,6 +19,8 @@
 #   compact     Q4_K/Q3_K experts, Q6_K shared, Q4_K attn
 #   i-compact   Same as compact (use with --imatrix at quantize time)
 #   mini        Q3_K edge / IQ2_S mid experts, Q5_K/Q4_K shared, Q4_K/Q3_K attn
+#   nano        Q3_K edge / IQ2_S near / IQ2_XXS mid experts (2.06 bpw mid) — needs imatrix
+#   micro       Q3_K edge / IQ2_XS near / IQ1_M mid experts (1.75 bpw mid) — needs imatrix, experimental
 #   custom      Specify each type manually via flags
 #
 set -euo pipefail
@@ -101,6 +103,29 @@ case "$PROFILE" in
         EDGE_ATTN="${EDGE_ATTN:-Q4_K}"
         MID_ATTN="${MID_ATTN:-Q3_K}"
         ;;
+    nano|i-nano)
+        # APEX Nano — aggressive mid-layer routed experts at IQ2_XXS (2.06 bpw)
+        # Target: ~25-30% smaller than Mini at modest quality cost. Requires imatrix.
+        EDGE_EXP="${EDGE_EXP:-Q3_K}"
+        NEAR_EXP="${NEAR_EXP:-iq2_s}"
+        MID_EXP="${MID_EXP:-iq2_xxs}"
+        EDGE_SHARED="${EDGE_SHARED:-Q5_K}"
+        MID_SHARED="${MID_SHARED:-Q4_K}"
+        EDGE_ATTN="${EDGE_ATTN:-Q4_K}"
+        MID_ATTN="${MID_ATTN:-Q3_K}"
+        ;;
+    micro|i-micro)
+        # APEX Micro — extreme mid-layer routed experts at IQ1_M (1.75 bpw)
+        # Only viable on MoE: sparse expert activation + shared expert kept high-precision
+        # softens per-token error. Quality drop expected — experimental tier. Requires imatrix.
+        EDGE_EXP="${EDGE_EXP:-Q3_K}"
+        NEAR_EXP="${NEAR_EXP:-iq2_xs}"
+        MID_EXP="${MID_EXP:-iq1_m}"
+        EDGE_SHARED="${EDGE_SHARED:-Q5_K}"
+        MID_SHARED="${MID_SHARED:-Q4_K}"
+        EDGE_ATTN="${EDGE_ATTN:-Q4_K}"
+        MID_ATTN="${MID_ATTN:-Q3_K}"
+        ;;
     custom)
         [ -z "$EDGE_EXP" ] && { echo "Error: --custom requires --edge-exp" >&2; exit 1; }
         [ -z "$MID_EXP" ] && MID_EXP="$EDGE_EXP"
@@ -112,7 +137,7 @@ case "$PROFILE" in
         ;;
     *)
         echo "Error: unknown profile '$PROFILE'" >&2
-        echo "Available: quality, i-quality, balanced, i-balanced, compact, i-compact, mini, custom" >&2
+        echo "Available: quality, i-quality, balanced, i-balanced, compact, i-compact, mini, nano, i-nano, micro, i-micro, custom" >&2
         exit 1
         ;;
 esac
