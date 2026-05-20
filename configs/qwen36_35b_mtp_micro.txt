@@ -613,3 +613,4 @@ blk.40.attn_qkv=Q4_K
 blk.40.ssm_alpha=Q4_K
 blk.40.ssm_beta=Q4_K
 blk.40.ssm_out=Q4_K
+blk.40.nextn.eh_proj=Q4_K
