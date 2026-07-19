@@ -1,0 +1,20 @@
+# MTP Speculative Decoding Benchmarks on NVIDIA Jetson AGX Xavier
+# Device: Jetson AGX Xavier (Volta, 512-core, 32GB unified memory, ~135 GB/s, 30W)
+# Software: llama.cpp master (SHA 571d0d54), CUDA 11.4, Ubuntu 20.04 aarch64
+# MTP config: --spec-type draft-mtp --spec-draft-ngl 82 --spec-draft-n-max 2
+# Benchmark: 128 tokens generated after 29-token prompt, single run curl API
+# Base model: Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved
+#
+# Format:
+# model  size_gb  baseline_ts  baseline_tps  mtp_ts  mtp_tps  speedup  accept_rate  gpu_mem_free
+# ts = time for 128 tokens (ms)
+# tps = tokens per second
+
+# --- K-quant (bartowski) ---
+Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-Q3_K_M  17.3  8014  15.96  5532  23.14  +45.0%  97.7%  24.7
+
+# --- APEX I-Compact (cvgro, Native-MTP-Preserved variant) ---
+Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-APEX-I-Compact  16.9  8014  15.97  6734  19.01  +19.0%  69.8%  24.9
+
+# --- APEX I-Mini (cvgro, Native-MTP-Preserved variant) ---
+Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-APEX-I-Mini  13.3  8725  14.67  6992  18.31  +24.8%  70.5%  25.3
