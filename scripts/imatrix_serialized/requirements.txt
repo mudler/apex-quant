@@ -1,0 +1,13 @@
+# Optional deps for IMATRIX_BACKEND=serialized only (not needed for the default llama backend).
+#
+# transformers API note — two generator variants ship, pick by installed version:
+#   * transformers 5.5.x  -> serialized_gen.py / gen_imatrix.py
+#                            (GraniteMoeHybridParallelExperts)
+#   * transformers 5.14+   -> serialized_gen_t514.py / _t514_fast.py / gen_imatrix_t514.py
+#                            (GraniteMoeHybridExperts; _fast is VRAM-bounded)
+# Either line works; install the one matching your torch/CUDA stack.
+torch>=2.4
+transformers>=5.5
+accelerate>=1.0
+numpy
+gguf

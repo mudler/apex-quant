@@ -56,6 +56,12 @@ ONLY_PHASES=""
 EVAL_SUITE=""           # override from CLI; otherwise use YAML
 DRY_RUN=false
 NGL="${NGL:-99}"
+# imatrix backend: "llama" (stock llama-imatrix, whole model resident) or
+# "serialized" (band-bounded PyTorch generator; peak resident = IMATRIX_BAND layers,
+# independent of model size — for models too large to llama-imatrix locally).
+IMATRIX_BACKEND="${IMATRIX_BACKEND:-llama}"
+IMATRIX_BAND="${IMATRIX_BAND:-1}"
+IMATRIX_DEVICE="${IMATRIX_DEVICE:-cuda}"
 WORK_DIR="${WORK_DIR:-/workspace/data/apex}"
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-}"
 PORT="${PORT:-8192}"
@@ -616,13 +622,25 @@ fi
 # Phase 6: Generate imatrix
 # ═══════════════════════════════════════════════════════════════════════════════
 if should_run imatrix; then
-    log "Phase 6: Generating importance matrix"
-    F16=$(find_f16)
-
+    log "Phase 6: Generating importance matrix (backend: $IMATRIX_BACKEND)"
     info "Calibration file: $CALIBRATION ($(wc -l < "$CALIBRATION") lines, $(du -h "$CALIBRATION" | cut -f1))"
-    info "Source model: $F16"
-    $IMATRIX_BIN -m "$F16" -f "$CALIBRATION" -ngl $NGL \
-        -o "${MODEL_DIR}/imatrix.dat" 2>&1 | tail -5
+
+    if [ "$IMATRIX_BACKEND" = "serialized" ]; then
+        # Band-serialized PyTorch backend: peak resident = IMATRIX_BAND layers,
+        # independent of model size. Reads the HF safetensors (from Phase 2), not the
+        # F16 GGUF, and writes the same imatrix.dat that Phase 7 consumes.
+        HF_DIR="${MODEL_DIR}/safetensors"
+        [ -d "$HF_DIR" ] || { err "serialized backend needs HF safetensors at $HF_DIR (download without SOURCE_GGUF)"; exit 1; }
+        info "Source (HF safetensors): $HF_DIR  |  band=$IMATRIX_BAND  device=$IMATRIX_DEVICE"
+        python3 "${REPO_DIR}/scripts/imatrix_serialized/serialized_gen.py" \
+            --model "$HF_DIR" --calib "$CALIBRATION" \
+            --out "${MODEL_DIR}/imatrix.dat" --band "$IMATRIX_BAND" --device "$IMATRIX_DEVICE" 2>&1 | tail -8
+    else
+        F16=$(find_f16)
+        info "Source model: $F16"
+        $IMATRIX_BIN -m "$F16" -f "$CALIBRATION" -ngl $NGL \
+            -o "${MODEL_DIR}/imatrix.dat" 2>&1 | tail -5
+    fi
     ls -lh "${MODEL_DIR}/imatrix.dat"
 fi
 
