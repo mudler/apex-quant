@@ -25,4 +25,4 @@ APEX_I-Compact_mtp_n2    17.0  24.85  0.07  24.76  24.91  5
 # --- Original PR single-run data (kept for reference) ---
 # Note: Q3_K_M baseline 15.96 t/s (single run) vs our 19.32 t/s (5-run mean)
 # Baseline drift ~21% attributed to thermal/system load differences
-# MTP accept rates from original: Q3_K_M: 97.7%, APEX I-Compact: 69.8%, APEX I-Mini: 70.5%
+# MTP accept rates from original PR (different session): Q3_K_M: 97.7%, APEX I-Compact: 69.8%, APEX I-Mini: 70.5%

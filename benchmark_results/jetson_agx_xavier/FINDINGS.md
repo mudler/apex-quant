@@ -48,26 +48,11 @@ Both quantizations show extremely low variance (≤0.2% CV), confirming test rep
 
 > *Accept rates from original PR (single run). Q3_K_M speedup of 16.3% vs our baseline (original PR: +45% vs 15.96 t/s). APEX speedup of 24.4% (original PR: +19.0% vs 15.97 t/s).
 
-**Key observation**: APEX I-Compact achieves **higher absolute MTP throughput (24.85 t/s) and higher speedup (+24.4%)** than Q3_K_M MTP (22.47 t/s, +16.3%), despite a significantly lower acceptance rate (69.8% vs 97.7%).
-
-This apparent paradox has a straightforward explanation: APEX I-Compact's **higher baseline throughput (19.97 vs 19.32 t/s)** means each draft token rejected is less costly, so a lower accept rate still yields higher net speed. The MTP acceleration formula:
-
-```
-effective_tps = baseline_tps / (1 - accept_rate × draft_ratio)
-```
-
-With draft_ratio ≈ 0.5 (n_max=2):
-
-| Quant | Baseline | Accept Rate | Implied MTP | Actual MTP |
-|---|---|---|---|---|
-| Q3_K_M | 19.32 | 97.7% | 19.32 / (1 - 0.977×0.5) ≈ **22.1** | **22.47** ✓ |
-| APEX | 19.97 | 69.8% | 19.97 / (1 - 0.698×0.5) ≈ **24.5** | **24.85** ✓ |
-
-Both predictions match within ~2%, confirming the model is sound. The formula shows that with a 3.4% higher baseline, APEX only needs ~70% accept rate to beat Q3_K_M's 98% rate.
+**Key observation**: APEX I-Compact achieves **higher absolute MTP throughput (24.85 t/s) and higher speedup (+24.4%)** than Q3_K_M MTP (22.47 t/s, +16.3%), despite a significantly lower acceptance rate (69.8% vs 97.7%). The directly observed result stands on its own — the acceptance rates are carried over from the original PR (different session, ~21% Q3 baseline drift), so no causal formula can be reliably derived from cross-session measurements.
 
 ## Key Finding
 
-On this Jetson AGX Xavier test system, **APEX I-Compact outperforms Q3_K_M in both baseline (+3.4%) and MTP (+10.6% absolute)** throughput. The original PR's finding that "K-quant objectively outperforms APEX" was based on single-run data where baseline throughput was essentially identical (15.96 vs 15.97 t/s), making accept rate the dominant factor. With multi-run data revealing a small but persistent APEX baseline advantage, the slower draft acceptance becomes less impactful.
+On this Jetson AGX Xavier test system, **APEX I-Compact outperforms Q3_K_M in both baseline (+3.4%) and MTP (+10.6% absolute)** throughput (directly observed, same test session).
 
 ### Practical implications
 
@@ -85,7 +70,7 @@ On this Jetson AGX Xavier test system, **APEX I-Compact outperforms Q3_K_M in bo
 1. **Single device (N=1)**: Results are device-specific and may not generalize.
 2. **Single prompt, fixed length**: Only tested with one prompt (180 chars) and 128 output tokens.
 3. **Thermal ordering**: APEX was tested after Q3_K_M — the device may have been in a different thermal state.
-4. **Accept rate not independently measured**: Values from original PR. Accept rates on our hardware may differ — the agreement between formula and actual MTP throughput suggests they're close, but direct measurement would be ideal.
+4. **Accept rate not independently measured**: Values from original PR (different session, ~21% Q3 baseline drift). Accept rates on our hardware may differ significantly — direct measurement would be needed for a proper causal model.
 5. **No APEX I-Mini**: The 13.3 GB variant is no longer available, limiting the comparison to similar-size models only.
 6. **Causal mechanism speculative**: The link between APEX's layer-wise precision gradient and accept rate reduction is inferred, not experimentally validated.
 
