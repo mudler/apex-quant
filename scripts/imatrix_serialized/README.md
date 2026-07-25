@@ -62,6 +62,16 @@ python3 scripts/imatrix_serialized/serialized_gen.py --model <hf_dir> \
   --calib <calibration.txt> --out imatrix.dat --band 1 --device cuda
 ```
 
+### Key flags
+- **`--band N` / `--batch N`** — throughput knobs. `band=1 batch=1` is the memory-minimal
+  but *slowest* corner: the GPU starves between per-layer load + host↔device transfer cycles.
+  Raise `--batch` for bigger GEMMs, and `--band` to amortize the per-band weight load over
+  more compute. Both are **result-invariant** (Σx² is order/batch/band-invariant) — tune
+  them purely for speed vs. VRAM, the imatrix comes out identical.
+- **`--mtp`** *(generators for models with a NextN/MTP head, e.g. `serialized_gen_qwen35.py`)* —
+  also compute importance for the multi-token-prediction head (`blk.{n_layers}.*`).
+  `llama-imatrix` cannot cover it; omit the flag to match a head-less reference file.
+
 ### Calibration corpus
 Use a **diverse** calibration file — mixed prose, code, and math — not wikitext alone.
 The imatrix records per-channel activation statistics, so channels that only fire on
@@ -69,6 +79,14 @@ The imatrix records per-channel activation statistics, so channels that only fir
 matters most for coding/agentic and multilingual models. Bartowski's
 `calibration_datav3` is a good general default; weight toward your target domain.
 Calibration diversity changes the imatrix *values*, not its size or tensor coverage.
+
+The calibration corpus also governs *reproducibility* and *specialization*: re-running with
+the **same** calibration reproduces an imatrix to ~0.99 median per-tensor correlation, while a
+**different** corpus legitimately shifts the values. That shift concentrates in the routed
+**expert** projections (`ffn_*_exps`) — the experts are what specialize by domain — whereas
+attention and shared-expert paths stay ~1.0. So a code-weighted calibration measurably favors
+coding channels (at a small cost elsewhere); reach for it deliberately when specializing for a
+single domain, and use the *same* calibration when your goal is to reproduce a reference.
 
 ## Validation
 
