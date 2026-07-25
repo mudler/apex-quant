@@ -137,7 +137,8 @@ def make_hooks(named_mods, acc, known):
                     Sd[e] += (inter * inter).sum(0).double(); Cd[e] += tok_idx.numel()
             handles.append(mod.register_forward_pre_hook(pre_experts))
         elif isinstance(mod, GraniteMoeHybridTopKRouter):
-            gname = f"blk.{re.match(r'.*layers\.(\d+)\.', hf_name).group(1)}.ffn_gate_inp.weight"
+            _m = re.match(r".*layers\.(\d+)\.", hf_name)
+            gname = f"blk.{_m.group(1)}.ffn_gate_inp.weight"
             note([gname])
             def pre_router(m, a, gname=gname):
                 x = a[0].detach().reshape(-1, a[0].shape[-1]).float()

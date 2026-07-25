@@ -45,7 +45,10 @@ def map_linear(hf):
 
 
 def expert_names(hf):
-    b = f"blk.{re.match(r'.*layers\.(\d+)\.', hf).group(1)}"
+    m = re.match(r".*layers\.(\d+)\.", hf)
+    if not m:
+        raise ValueError(f"no layer index in {hf!r}")
+    b = f"blk.{m.group(1)}"
     return {"gate": f"{b}.ffn_gate_exps.weight", "up": f"{b}.ffn_up_exps.weight", "down": f"{b}.ffn_down_exps.weight"}
 
 
@@ -136,7 +139,8 @@ def make_hooks(named_mods, acc, known):
                     Sd[e] += (inter * inter).sum(0).double(); Cd[e] += idx.numel()
             handles.append(mod.register_forward_pre_hook(pre_experts))
         elif isinstance(mod, Qwen3_5MoeTopKRouter):
-            gname = f"blk.{re.match(r'.*layers\.(\d+)\.', hf).group(1)}.ffn_gate_inp.weight"
+            _m = re.match(r".*layers\.(\d+)\.", hf)
+            gname = f"blk.{_m.group(1)}.ffn_gate_inp.weight"
             note([gname])
             def pre_router(m, a, gname=gname):
                 x = a[0].detach().reshape(-1, a[0].shape[-1]).float()
