@@ -43,13 +43,32 @@ Per-arch name mapping is the extension surface. Variants shipped:
 | `serialized_gen_llama4.py` | Llama-4 | 5.5.x | ⚠️ experimental (untested) |
 
 ## Setup
-Install the optional deps into an environment with a **CUDA** torch build matching
-your GPU (`requirements.txt`), then set `IMATRIX_BACKEND=serialized` (optionally
-`IMATRIX_BAND=<n>`, `IMATRIX_DEVICE=cuda`) when invoking `apex_pipeline.sh`. Standalone:
+
+> **Install a CUDA torch build, not the default CPU wheel.** `pip install torch`
+> pulls the **CPU-only** wheel, and the generator will then run entirely on CPU
+> (`--device cuda` will error or, on CPU, crawl — orders of magnitude slower, and
+> the hybrid-SSM path is especially slow on CPU). Install torch from the CUDA index
+> matching your driver, e.g.:
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/cu128   # pick cuXXX for your CUDA
+> pip install transformers accelerate numpy gguf                          # rest of requirements.txt
+> python3 -c "import torch; assert torch.cuda.is_available(), 'CPU-only torch — reinstall from the CUDA index'"
+> ```
+
+Then set `IMATRIX_BACKEND=serialized` (optionally `IMATRIX_BAND=<n>`,
+`IMATRIX_DEVICE=cuda`) when invoking `apex_pipeline.sh`. Standalone:
 ```bash
 python3 scripts/imatrix_serialized/serialized_gen.py --model <hf_dir> \
   --calib <calibration.txt> --out imatrix.dat --band 1 --device cuda
 ```
+
+### Calibration corpus
+Use a **diverse** calibration file — mixed prose, code, and math — not wikitext alone.
+The imatrix records per-channel activation statistics, so channels that only fire on
+(e.g.) code or non-English text get no signal from an all-Wikipedia corpus, which
+matters most for coding/agentic and multilingual models. Bartowski's
+`calibration_datav3` is a good general default; weight toward your target domain.
+Calibration diversity changes the imatrix *values*, not its size or tensor coverage.
 
 ## Validation
 

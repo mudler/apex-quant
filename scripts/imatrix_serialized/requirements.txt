@@ -1,3 +1,8 @@
+# IMPORTANT: install torch from the CUDA index, not the default CPU wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128  # pick cuXXX for your CUDA
+# A CPU-only torch runs the generator on CPU (very slow; hybrid-SSM especially).
+# Verify: python3 -c "import torch; assert torch.cuda.is_available()"
+#
 # Optional deps for IMATRIX_BACKEND=serialized only (not needed for the default llama backend).
 #
 # transformers API note — two generator variants ship, pick by installed version:
