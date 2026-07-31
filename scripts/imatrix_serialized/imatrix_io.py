@@ -50,8 +50,9 @@ def write_imatrix(path, entries, datasets, chunk_count, chunk_size):
         counts = counts.reshape(-1)        # [nmat]
         # GGUF tensor dims are stored reversed; add_tensor takes numpy with
         # shape [nmat, in_feat] -> ggml ne = [in_feat, nmat]
+        nmat = counts.shape[0]
         w.add_tensor(base + ".in_sum2", np.ascontiguousarray(sums, dtype=np.float32))
-        w.add_tensor(base + ".counts", np.ascontiguousarray(counts.reshape(nmat := counts.shape[0], 1), dtype=np.float32))
+        w.add_tensor(base + ".counts", np.ascontiguousarray(counts.reshape(nmat, 1), dtype=np.float32))
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()

@@ -62,6 +62,8 @@ NGL="${NGL:-99}"
 IMATRIX_BACKEND="${IMATRIX_BACKEND:-llama}"
 IMATRIX_BAND="${IMATRIX_BAND:-1}"
 IMATRIX_DEVICE="${IMATRIX_DEVICE:-cuda}"
+IMATRIX_BATCH="${IMATRIX_BATCH:-}"      # chunks per forward; empty = generator default
+IMATRIX_MTP="${IMATRIX_MTP:-false}"     # also cover the NextN/MTP head (arch must support it)
 WORK_DIR="${WORK_DIR:-/workspace/data/apex}"
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-}"
 PORT="${PORT:-8192}"
@@ -632,9 +634,19 @@ if should_run imatrix; then
         HF_DIR="${MODEL_DIR}/safetensors"
         [ -d "$HF_DIR" ] || { err "serialized backend needs HF safetensors at $HF_DIR (download without SOURCE_GGUF)"; exit 1; }
         info "Source (HF safetensors): $HF_DIR  |  band=$IMATRIX_BAND  device=$IMATRIX_DEVICE"
-        python3 "${REPO_DIR}/scripts/imatrix_serialized/serialized_gen.py" \
+        # dispatch.py picks the generator by the checkpoint's model_type and probes the
+        # installed transformers for the symbols that variant needs, so an unsupported
+        # arch or a mismatched transformers fails with an actionable message instead of
+        # an ImportError from a hardcoded Granite-only script.
+        # --mtp / --batch only exist on the generators that support them; argparse in the
+        # dispatched script reports it plainly if the knob does not apply to that arch.
+        IMATRIX_EXTRA=()
+        if [ "$IMATRIX_MTP" = "true" ]; then IMATRIX_EXTRA+=(--mtp); fi
+        if [ -n "$IMATRIX_BATCH" ]; then IMATRIX_EXTRA+=(--batch "$IMATRIX_BATCH"); fi
+        python3 "${REPO_DIR}/scripts/imatrix_serialized/dispatch.py" \
             --model "$HF_DIR" --calib "$CALIBRATION" \
-            --out "${MODEL_DIR}/imatrix.dat" --band "$IMATRIX_BAND" --device "$IMATRIX_DEVICE" 2>&1 | tail -8
+            --out "${MODEL_DIR}/imatrix.dat" --band "$IMATRIX_BAND" --device "$IMATRIX_DEVICE" \
+            "${IMATRIX_EXTRA[@]+"${IMATRIX_EXTRA[@]}"}" 2>&1 | tail -20
     else
         F16=$(find_f16)
         info "Source model: $F16"

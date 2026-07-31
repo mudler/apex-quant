@@ -30,6 +30,7 @@ from transformers.models.granitemoehybrid.modeling_granitemoehybrid import (
     GraniteMoeHybridExperts,
     GraniteMoeHybridTopKRouter,
 )
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix, read_imatrix
 
 
@@ -70,8 +71,7 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-memory", default=None, help="e.g. '12GiB' to cap GPU and offload rest")
     ap.add_argument("--dataset-label", default="calibration_datav3")
@@ -186,14 +186,16 @@ def main():
         print(f"UNMAPPED Linears ({len(fatal)}): {fatal}")
         sys.exit("ABORT: unmapped Linear tensors — fix map_linear() before running")
 
-    text = open(args.calib, encoding="utf-8", errors="ignore").read()
-    ids = tok(text, return_tensors="pt").input_ids[0]
-    nchunks = min(args.chunks, ids.shape[0] // args.ctx)
-    print(f"calib tokens={ids.shape[0]}, running {nchunks} chunks of {args.ctx}; device={args.device} dtype={dtype}")
+    # Same windowing/BOS handling as the band-serialized generators, so the two stay
+    # comparable -- the serialized generators' parity claim is against THIS one.
+    chunks_t, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                   add_bos=args.bos_per_chunk)
+    nchunks = chunks_t.shape[0]
+    print(f"calib: {calib_info}; device={args.device} dtype={dtype}")
     dev = 0 if args.max_memory else args.device
     with torch.no_grad():
         for c in range(nchunks):
-            chunk = ids[c * args.ctx:(c + 1) * args.ctx].unsqueeze(0).to(dev)
+            chunk = chunks_t[c].unsqueeze(0).to(dev)
             model(chunk)
             if (c + 1) % 10 == 0:
                 print(f"  chunk {c+1}/{nchunks}", flush=True)

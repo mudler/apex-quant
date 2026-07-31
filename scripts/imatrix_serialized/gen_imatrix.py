@@ -14,6 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.models.granitemoehybrid.modeling_granitemoehybrid import (
     GraniteMoeHybridParallelExperts,
 )
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix, read_imatrix
 
 
@@ -46,8 +47,7 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-memory", default=None, help="e.g. '10GiB' to force offload (demo memory-bound)")
     ap.add_argument("--ground-truth", default=None, help="real imatrix to cross-check name set")
@@ -116,15 +116,17 @@ def main():
     print(f"hooked {len(mapped)} modules; skipped (not mapped) Linears: {skipped}")
 
     # tokenize whole calibration file, window into ctx-sized chunks
-    text = open(args.calib, encoding="utf-8", errors="ignore").read()
-    ids = tok(text, return_tensors="pt").input_ids[0]
-    nchunks = min(args.chunks, ids.shape[0] // args.ctx)
-    print(f"calib tokens={ids.shape[0]}, running {nchunks} chunks of {args.ctx}")
+    # Same windowing/BOS handling as the band-serialized generators, so the two stay
+    # comparable -- serialized_gen.py's parity claim is against THIS generator.
+    chunks_t, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                   add_bos=args.bos_per_chunk)
+    nchunks = chunks_t.shape[0]
+    print(f"calib: {calib_info}")
     dev = 0 if args.max_memory else args.device
     print(f"device={args.device} dtype={dtype}")
     with torch.no_grad():
         for c in range(nchunks):
-            chunk = ids[c * args.ctx : (c + 1) * args.ctx].unsqueeze(0).to(dev)
+            chunk = chunks_t[c].unsqueeze(0).to(dev)
             model(chunk)
             if (c + 1) % 20 == 0:
                 print(f"  chunk {c+1}/{nchunks}")

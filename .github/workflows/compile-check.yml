@@ -1,9 +1,21 @@
 name: compile-check
 
-# Smoke check: every shipped Python script must parse/compile on all supported
-# Python versions. Catches architecture-specific generator variants (and anything
-# else) landing unparsable — e.g. backslashes inside f-string expressions, which
-# only became legal in Python 3.12 (PEP 701).
+# Two layers of protection for the imatrix generators:
+#
+#  1. compileall  — every shipped Python script must parse on all supported Python
+#     versions. Catches architecture-specific generator variants (and anything else)
+#     landing unparsable — e.g. backslashes inside f-string expressions, which only
+#     became legal in Python 3.12 (PEP 701).
+#
+#  2. tests — actually EXECUTE the checks that have no external dependencies, so the
+#     pieces most worth locking down are proven rather than merely parsed:
+#       * format layer (numpy + gguf only)      -> test_roundtrip.py
+#       * calibration windowing / llama.cpp BOS -> test_calib.py       (torch)
+#       * GLM-4.5 routed-expert statistic       -> test_glm4_expert_stats.py (torch)
+#       * Llama-4 expert row counts             -> test_llama4_expert_counts.py
+#                                                  (torch + transformers)
+#       * causal masking                        -> test_causal_mask.py (torch)
+#     None of these need a checkpoint, a GPU, or network access at run time.
 on:
   push:
   pull_request:
@@ -22,3 +34,46 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Compile all shipped Python scripts
         run: python -m compileall -q scripts
+
+  format-tests:
+    # Cheap: no torch. Guards the imatrix GGUF layout llama.cpp has to read back.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install format deps
+        run: python -m pip install --upgrade pip numpy gguf
+      - name: imatrix format round-trip
+        working-directory: scripts/imatrix_serialized
+        run: python test_roundtrip.py
+
+  generator-tests:
+    # CPU-only torch: the statistic/count/windowing logic, no checkpoint required.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU torch + transformers
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy gguf transformers
+      - name: Calibration windowing + BOS parity
+        working-directory: scripts/imatrix_serialized
+        run: python test_calib.py
+      - name: GLM-4.5 routed-expert statistic
+        working-directory: scripts/imatrix_serialized
+        run: python test_glm4_expert_stats.py
+      - name: Llama-4 expert row counts
+        working-directory: scripts/imatrix_serialized
+        run: python test_llama4_expert_counts.py
+      - name: Generator dispatch resolves per arch
+        working-directory: scripts/imatrix_serialized
+        run: python test_dispatch.py
+      - name: Causal masking (non-causal imatrix regression)
+        working-directory: scripts/imatrix_serialized
+        run: python test_causal_mask.py

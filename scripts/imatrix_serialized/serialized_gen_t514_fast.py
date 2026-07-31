@@ -29,6 +29,7 @@ from transformers.models.granitemoehybrid.modeling_granitemoehybrid import (
 )
 from transformers.masking_utils import create_causal_mask
 from safetensors import safe_open
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix, read_imatrix
 from gen_imatrix_t514 import map_linear, expert_names
 
@@ -42,7 +43,8 @@ _RENAME = {
 class ShardReader:
     def __init__(self, d):
         self.dir = d
-        self.wm = json.load(open(os.path.join(d, "model.safetensors.index.json")))["weight_map"]
+        with open(os.path.join(d, "model.safetensors.index.json")) as f:
+            self.wm = json.load(f)["weight_map"]
         self.handles = {}
 
     def get(self, name):
@@ -127,9 +129,11 @@ def make_hooks(named_mods, acc, known):
                 Sg.index_add_(0, assign, contrib); Su.index_add_(0, assign, contrib)
                 ones = torch.ones(T * K, dtype=torch.float64, device=x.device)
                 Cg.index_add_(0, assign, ones); Cu.index_add_(0, assign, ones)
-                # down: per-expert intermediate (distinct weights) — loop, but no sync
+                # down: per-expert intermediate (distinct weights). .tolist() forces ONE
+                # device sync for the whole expert list; iterating the CUDA tensor
+                # directly syncs once PER expert (n_experts x layers x chunks).
                 Sd, Cd = acc.ensure(en["down"], ne, m.down_proj.shape[-1])
-                for e in torch.unique(top_k_index):
+                for e in torch.unique(top_k_index).tolist():
                     tok_idx = (top_k_index == e).any(dim=-1).nonzero(as_tuple=True)[0]
                     cur = x.index_select(0, tok_idx).to(m.gate_up_proj.dtype)
                     g, u = torch.nn.functional.linear(cur, m.gate_up_proj[e]).chunk(2, dim=-1)
@@ -153,16 +157,25 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--band", type=int, default=4)
     ap.add_argument("--batch", type=int, default=2, help="ctx-windows per forward (scan mem scales with this)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dataset-label", default="calibration_datav3")
     ap.add_argument("--ground-truth", default=None)
+    ap.add_argument("--attn-impl", default="eager",
+                    help="eager/sdpa/flash_attention_2; must be set because "
+                         "create_causal_mask() returns None when "
+                         "config._attn_implementation is unset, which makes the "
+                         "standalone decoder layers attend bidirectionally")
     args = ap.parse_args()
 
     cfg = AutoConfig.from_pretrained(args.model)
+    # MUST be set before create_causal_mask(): it returns None when
+    # config._attn_implementation is unset, and a standalone decoder layer given
+    # attention_mask=None then attends BIDIRECTIONALLY, silently producing a
+    # non-causal imatrix for attn_output (and everything downstream of it).
+    cfg._attn_implementation = args.attn_impl
     dev = args.device
     dtype = torch.bfloat16 if dev == "cuda" else torch.float32
     reader = ShardReader(args.model)
@@ -171,9 +184,10 @@ def main():
     ltype = cfg.layer_types
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    ids = tok(open(args.calib, encoding="utf-8", errors="ignore").read(), return_tensors="pt").input_ids[0]
-    nch = min(args.chunks, ids.shape[0] // args.ctx)
-    chunks = torch.stack([ids[c*args.ctx:(c+1)*args.ctx] for c in range(nch)])
+    chunks, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                add_bos=args.bos_per_chunk)
+    nch = chunks.shape[0]
+    print(f"calib: {calib_info}")
     print(f"layers={nlayers} band={args.band} batch={args.batch} chunks={nch} ctx={args.ctx} dtype={dtype}")
 
     embed_w = reader.get("model.embed_tokens.weight").to(dtype)
@@ -217,9 +231,10 @@ def main():
                 hid[sl] = h
             for hh in handles:
                 hh.remove()
-            for _, L in layers:
-                del L
-            layers.clear()
+            # Drop EVERY reference to the band's modules before empty_cache(), or the
+            # cache release is a no-op: `named` holds the submodules and `del L` only
+            # unbinds the loop variable.
+            handles.clear(); named.clear(); layers.clear()
             if dev == "cuda":
                 torch.cuda.empty_cache()
             print(f"  band {band[0]}-{band[-1]} done", flush=True)

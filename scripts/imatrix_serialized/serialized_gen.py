@@ -19,6 +19,7 @@ from transformers.models.granitemoehybrid.modeling_granitemoehybrid import (
 )
 from transformers.masking_utils import create_causal_mask
 from safetensors import safe_open
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix, read_imatrix
 from gen_imatrix import map_name
 
@@ -28,7 +29,8 @@ class ShardReader:
         self.dir = d
         idx = os.path.join(d, "model.safetensors.index.json")
         if os.path.exists(idx):
-            self.wm = json.load(open(idx))["weight_map"]
+            with open(idx) as f:
+                self.wm = json.load(f)["weight_map"]
         else:
             f = os.path.basename(glob.glob(os.path.join(d, "*.safetensors"))[0])
             with safe_open(os.path.join(d, f), framework="pt") as sf:
@@ -43,11 +45,18 @@ class ShardReader:
 
 
 def materialize(module, prefix, reader, dtype, device):
-    sd = {}
+    # Every module parameter MUST come from the checkpoint. Silently skipping a
+    # missing key would leave randomly-initialized weights in the band and produce
+    # a plausible-looking but meaningless imatrix, so a name mismatch is fatal.
+    sd, missing = {}, []
     for k in module.state_dict().keys():
         full = f"{prefix}.{k}"
         if full in reader.wm:
             sd[k] = reader.get(full).to(dtype)
+        else:
+            missing.append(k)
+    if missing:
+        raise KeyError(f"{prefix}: no checkpoint tensor for {missing}")
     module.load_state_dict(sd, strict=False, assign=True)
     return module.to(device).eval()
 
@@ -95,14 +104,23 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--band", type=int, default=4, help="layers resident at once (memory knob)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--ground-truth", default=None)
+    ap.add_argument("--attn-impl", default="eager",
+                    help="eager/sdpa/flash_attention_2; must be set because "
+                         "create_causal_mask() returns None when "
+                         "config._attn_implementation is unset, which makes the "
+                         "standalone decoder layers attend bidirectionally")
     args = ap.parse_args()
 
     cfg = AutoConfig.from_pretrained(args.model)
+    # MUST be set before create_causal_mask(): it returns None when
+    # config._attn_implementation is unset, and a standalone decoder layer given
+    # attention_mask=None then attends BIDIRECTIONALLY, silently producing a
+    # non-causal imatrix for attn_output (and everything downstream of it).
+    cfg._attn_implementation = args.attn_impl
     dev = args.device
     dtype = torch.bfloat16 if dev == "cuda" else torch.float32
     reader = ShardReader(args.model)
@@ -113,9 +131,10 @@ def main():
 
     # tokenize + window
     tok = AutoTokenizer.from_pretrained(args.model)
-    ids = tok(open(args.calib, encoding="utf-8", errors="ignore").read(), return_tensors="pt").input_ids[0]
-    nch = min(args.chunks, ids.shape[0] // args.ctx)
-    chunks = torch.stack([ids[c*args.ctx:(c+1)*args.ctx] for c in range(nch)])  # [nch, ctx]
+    chunks, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                add_bos=args.bos_per_chunk)
+    nch = chunks.shape[0]
+    print(f"calib: {calib_info}")
     print(f"layers={nlayers} band={args.band} chunks={nch} ctx={args.ctx} dtype={dtype}")
 
     # --- embed all chunks -> hidden cache on CPU ---
@@ -154,9 +173,10 @@ def main():
                 hid[c:c+1] = h.to(hid.dtype).cpu()
             for hh in handles:
                 hh.remove()
-            for _, L in layers:
-                del L
-            layers.clear()
+            # Drop EVERY reference to the band's modules before empty_cache(), or the
+            # cache release is a no-op: `named` holds the submodules and `del L` only
+            # unbinds the loop variable.
+            handles.clear(); named.clear(); layers.clear()
             if dev == "cuda":
                 torch.cuda.empty_cache()
             print(f"  band {band[0]}-{band[-1]} done")

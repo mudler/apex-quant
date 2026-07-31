@@ -22,6 +22,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 )
 from transformers.masking_utils import create_causal_mask
 from safetensors import safe_open
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix, read_imatrix
 
 
@@ -55,7 +56,8 @@ def expert_names(hf):
 class ShardReader:
     def __init__(self, d):
         self.dir = d
-        self.wm = json.load(open(os.path.join(d, "model.safetensors.index.json")))["weight_map"]
+        with open(os.path.join(d, "model.safetensors.index.json")) as f:
+            self.wm = json.load(f)["weight_map"]
         self.handles = {}
         cand = ["model.language_model", "language_model.model", "model"]
         self.prefix = next(p for p in cand if any(k.startswith(p + ".layers.") for k in self.wm))
@@ -131,7 +133,9 @@ def make_hooks(named_mods, acc, known):
                 ones = torch.ones(T * K, dtype=torch.float64, device=x.device)
                 Cg.index_add_(0, assign, ones); Cu.index_add_(0, assign, ones)
                 Sd, Cd = acc.ensure(en["down"], ne, m.down_proj.shape[-1])
-                for e in torch.unique(top_k_index):
+                # .tolist() forces ONE device sync for the whole expert list; iterating
+                # the CUDA tensor directly syncs once PER expert (256 x layers x chunks).
+                for e in torch.unique(top_k_index).tolist():
                     idx = (top_k_index == e).any(dim=-1).nonzero(as_tuple=True)[0]
                     cur = x.index_select(0, idx).to(m.gate_up_proj.dtype)
                     g, u = torch.nn.functional.linear(cur, m.gate_up_proj[e]).chunk(2, dim=-1)
@@ -154,7 +158,7 @@ def materialize_mtp_layer(layer, reader, dtype, device):
     checkpoint layouts: 3.5 stores the MTP experts PER-EXPERT, while 3.6 stores
     them FUSED (gate_up_proj/down_proj) exactly like the main model."""
     pre = "mtp.layers.0"
-    sd = {}
+    sd, missing = {}, []
     ne = layer.mlp.experts.num_experts
     for k in layer.state_dict().keys():
         if k == "mlp.experts.gate_up_proj":
@@ -172,6 +176,12 @@ def materialize_mtp_layer(layer, reader, dtype, device):
                 sd[k] = torch.stack(d).to(dtype)
         elif f"{pre}.{k}" in reader.wm:
             sd[k] = reader.get(f"{pre}.{k}").to(dtype)
+        else:
+            missing.append(k)
+    # Same rule as materialize(): a missing MTP key would leave random weights in
+    # the head and silently poison blk.{n_layers}.* in the output imatrix.
+    if missing:
+        raise KeyError(f"{pre}: no checkpoint tensor for {missing}")
     layer.load_state_dict(sd, strict=False, assign=True)
     return layer.to(device).eval()
 
@@ -187,11 +197,27 @@ def process_mtp(cfg, reader, hid, chunks, pos_emb, acc, known, dtype, dev, batch
     The MTP block maps to ggml blk.{n_layers}: its decoder-layer tensors reuse the
     normal map (attn_*, ffn_*_exps/shexp, ffn_gate_inp*), plus fc -> nextn.eh_proj.
 
-    NOTE: unlike the 510 main tensors, these values cannot be correlation-checked
-    against a public imatrix (none covers MTP) and transformers cannot run the head,
-    so this forward is reconstructed from the checkpoint. Names/shapes are validated
-    against the gguf; the concat order and token/hidden shift follow the standard
-    formulation and are documented assumptions.
+    The eh_proj concat order is VERIFIED against llama.cpp master, not assumed:
+    src/models/qwen35moe.cpp builds the MTP block with
+        ggml_concat(ctx0, e_norm, h_norm, /*dim=*/0)
+    and ggml_compute_forward_concat writes src0 at the low indices of `dim`, so input
+    channels [0, n_embd) are the embedding-norm half and [n_embd, 2*n_embd) the
+    hidden-norm half. eh_proj is created as {2*n_embd, n_embd} (ne[0] = reduction dim),
+    and conversion/qwen.py renames `mtp.fc` -> `layers.{n_layer}.eh_proj` with no
+    transpose, so torch's [H, 2H] row-major weight keeps the same channel order in the
+    gguf. The torch.cat below therefore matches the graph channel-for-channel.
+
+    The one-position token/hidden shift is likewise verified, caller-side rather than
+    in the graph: common/speculative.cpp pairs, in a single batch row, the token
+    sampled AT the position whose hidden state it also submits
+    (`common_batch_add(batch, id, ...)` + `memcpy(batch.embd + ..., h_row, ...)`),
+    i.e. embed(t_{i+1}) with h_i -- the same alignment as the `emb[:, 1:]` /
+    `h[:, :-1]` pairing below.
+
+    NOTE: what remains unverifiable is the numerical result, not the wiring -- these
+    values cannot be correlation-checked against a public imatrix (none covers MTP)
+    and transformers has no MTP module, so the forward is reconstructed from the
+    checkpoint and validated only by names/shapes against the gguf.
     """
     P, H, L = reader.prefix, cfg.hidden_size, cfg.num_hidden_layers
     blk = f"blk.{L}"
@@ -245,17 +271,26 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--band", type=int, default=2)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dataset-label", default="calibration_datav3")
     ap.add_argument("--ground-truth", default=None)
     ap.add_argument("--mtp", action="store_true", help="also cover the nextn/MTP head -> blk.{n_layers}.*")
+    ap.add_argument("--attn-impl", default="eager",
+                    help="eager/sdpa/flash_attention_2; must be set because "
+                         "create_causal_mask() returns None when "
+                         "config._attn_implementation is unset, which makes the "
+                         "standalone decoder layers attend bidirectionally")
     args = ap.parse_args()
 
     cfg = AutoConfig.from_pretrained(args.model).get_text_config()
+    # MUST be set before create_causal_mask(): it returns None when
+    # config._attn_implementation is unset, and a standalone decoder layer given
+    # attention_mask=None then attends BIDIRECTIONALLY, silently producing a
+    # non-causal imatrix for attn_output (and everything downstream of it).
+    cfg._attn_implementation = args.attn_impl
     dev, dtype = args.device, (torch.bfloat16 if args.device == "cuda" else torch.float32)
     reader = ShardReader(args.model); P = reader.prefix
     known = set(read_imatrix(args.ground_truth)[1]) if args.ground_truth else None
@@ -265,9 +300,10 @@ def main():
           f"batch={args.batch} prefix={P} dtype={dtype}")
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    ids = tok(open(args.calib, encoding="utf-8", errors="ignore").read(), return_tensors="pt").input_ids[0]
-    nch = min(args.chunks, ids.shape[0] // args.ctx)
-    chunks = torch.stack([ids[c*args.ctx:(c+1)*args.ctx] for c in range(nch)])
+    chunks, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                add_bos=args.bos_per_chunk)
+    nch = chunks.shape[0]
+    print(f"calib: {calib_info}")
     print(f"chunks={nch} ctx={args.ctx}")
 
     embed_w = reader.get(f"{P}.embed_tokens.weight").to(dtype)
@@ -309,8 +345,10 @@ def main():
                 hid[sl] = h
             for hh in handles:
                 hh.remove()
-            for _, L in layers:
-                del L
+            # Drop EVERY reference to the band's modules before empty_cache(), or the
+            # cache release is a no-op: `named` holds the submodules and `del L` only
+            # unbinds the loop variable.
+            handles.clear(); named.clear(); layers.clear()
             if dev == "cuda":
                 torch.cuda.empty_cache()
             print(f"  band {band[0]}-{band[-1]} done", flush=True)

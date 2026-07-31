@@ -7,9 +7,19 @@ different enough to need its own module:
     is internal; we recompute the gated intermediate inside the hook from the
     captured input + the band's loaded weights.
   - MoE folds the router score into the expert input (hidden.repeat * router_scores),
-    so gate/up expert stats are router-weighted. There is no ground-truth Scout
-    imatrix to correlation-check against (bf16 doesn't fit 128 GB -- the whole
-    point), so this validates by QUANT COHERENCE, not correlation.
+    so gate/up expert stats are router-weighted. This MATCHES llama.cpp, which special
+    cases this arch -- src/llama-graph.cpp:1837
+        const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4;
+    and at L1976 multiplies the sigmoid-ed weights into `cur` BEFORE the gate/up
+    mul_mat_id (the generic MoE path instead weights the expert OUTPUT at L2121, which
+    is what leaves gate/up unweighted for every other arch). So a weighted stat here is
+    the correct reproduction, not a divergence.
+    Row counts come from the router's exact top-k indices: transformers hands every
+    expert all T rows with non-selected ones scaled to zero, so they must be masked
+    back out to match llama.cpp's one-count-per-(token, selected-expert) slot.
+    There is still no ground-truth Scout imatrix to correlation-check against (bf16
+    doesn't fit 128 GB -- the whole point), so this validates by QUANT COHERENCE, not
+    correlation.
   - Attention interleaves RoPE / NoPE and uses chunked attention (chunk 8192);
     at ctx<=8192 chunked == plain causal, and Llama4TextAttention applies RoPE
     only on rope layers internally, so we pass one causal mask + rotary to all.
@@ -21,9 +31,11 @@ import numpy as np, torch
 from transformers import AutoConfig, AutoTokenizer
 from transformers.models.llama4.modeling_llama4 import (
     Llama4TextDecoderLayer, Llama4TextRotaryEmbedding, Llama4TextExperts,
+    Llama4Router,
 )
 from transformers.masking_utils import create_causal_mask
 from safetensors import safe_open
+from calib import load_calibration_chunks, add_calib_args
 from imatrix_io import write_imatrix
 
 
@@ -46,7 +58,8 @@ class ShardReader:
     def __init__(self, d):
         self.dir = d
         idx = os.path.join(d, "model.safetensors.index.json")
-        self.wm = json.load(open(idx))["weight_map"]
+        with open(idx) as f:
+            self.wm = json.load(f)["weight_map"]
         self.handles = {}
         # detect weight-key prefix for the text decoder layers
         self.prefix = "language_model.model" if any(
@@ -59,12 +72,82 @@ class ShardReader:
         return self.handles[fn].get_tensor(name)
 
 
+def make_ensure(acc):
+    """Accumulator slot factory: acc[name] = {sums [nmat, nin], counts [nmat]}."""
+    def ensure(name, nmat, nin):
+        if name not in acc:
+            acc[name] = {"sums": np.zeros((nmat, nin), np.float64), "counts": np.zeros(nmat, np.int64)}
+        return acc[name]
+    return ensure
+
+
+def hook_linear(mod, names, ensure):
+    def pre(m, a, names=names):
+        x = a[0].detach().float().reshape(-1, a[0].shape[-1])
+        s = (x * x).sum(0).double().cpu().numpy()
+        for nm in names:
+            e = ensure(nm, 1, x.shape[-1]); e["sums"][0] += s; e["counts"][0] += x.shape[0]
+    return mod.register_forward_pre_hook(pre)
+
+
+def hook_router_select(mod, blk, sel):
+    """Capture the router's exact top-k selection for `blk` into sel[blk]."""
+    def post(m, a, out):
+        router_logits = out[1]
+        sel[blk] = torch.topk(router_logits, m.top_k, dim=1).indices.detach()
+    return mod.register_forward_hook(post)
+
+
+def hook_experts(mod, blk, ensure, sel):
+    gate_n, up_n, down_n = f"{blk}.ffn_gate_exps.weight", f"{blk}.ffn_up_exps.weight", f"{blk}.ffn_down_exps.weight"
+    def pre(m, a):
+        E = m.num_experts
+        X = a[0].detach().view(E, -1, m.hidden_size)            # [E,T,H] (router-scaled)
+        T = X.shape[1]
+        # Exact selection mask from the router's top-k, NOT a nonzero-row heuristic.
+        # transformers hands every expert all T rows with the non-selected ones
+        # scaled to 0, so counting `abs().sum(-1) > 0` rows happened to work but
+        # breaks on a genuinely-zero activation row or a router score that
+        # underflows to 0 in bf16. llama.cpp counts one per (token, selected-expert)
+        # slot, which is exactly what the top-k indices give.
+        idx = sel[blk]                                          # [T, top_k]
+        keep = torch.zeros(T, E, dtype=torch.bool, device=X.device)
+        keep.scatter_(1, idx, True)
+        mask = keep.t().unsqueeze(-1)                           # [E,T,1]
+        cnt = keep.sum(0).cpu().numpy()                         # [E] exact row counts
+
+        # NOTE: the router-weighted input IS correct for Llama-4. llama.cpp special
+        # cases this arch -- llama-graph.cpp:1837
+        #   const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4;
+        # and at L1976 multiplies the sigmoid-ed weights into `cur` BEFORE the
+        # gate/up mul_mat_id, so llama-imatrix also records a weighted stat here.
+        xin = X.float() * mask
+        s_in = (xin * xin).sum(1).double().cpu().numpy()        # [E,H]  gate/up input stat
+        for nm in (gate_n, up_n):
+            e = ensure(nm, E, m.hidden_size); e["sums"] += s_in; e["counts"] += cnt
+        # recompute gated intermediate to get down_proj input (also from the
+        # weighted input, matching the graph order above)
+        gate_up = torch.bmm(X.to(m.gate_up_proj.dtype), m.gate_up_proj)
+        gate, up = gate_up.chunk(2, dim=-1)
+        inter = (up * m.act_fn(gate)).float() * mask            # [E,T,inter]
+        s_dn = (inter * inter).sum(1).double().cpu().numpy()    # [E,inter]
+        e = ensure(down_n, E, inter.shape[-1]); e["sums"] += s_dn; e["counts"] += cnt
+    return mod.register_forward_pre_hook(pre)
+
+
 def materialize(module, prefix, reader, dtype, device):
-    sd = {}
+    # Every module parameter MUST come from the checkpoint -- see the note in
+    # serialized_gen.py: a skipped key leaves random weights in the band and the
+    # resulting imatrix is meaningless with no error anywhere.
+    sd, missing = {}, []
     for k in module.state_dict().keys():
         full = f"{prefix}.{k}"
         if full in reader.wm:
             sd[k] = reader.get(full).to(dtype)
+        else:
+            missing.append(k)
+    if missing:
+        raise KeyError(f"{prefix}: no checkpoint tensor for {missing}")
     module.load_state_dict(sd, strict=False, assign=True)
     return module.to(device).eval()
 
@@ -74,14 +157,24 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--calib", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--chunks", type=int, default=126)
-    ap.add_argument("--ctx", type=int, default=512)
+    add_calib_args(ap)
     ap.add_argument("--band", type=int, default=2)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--attn-impl", default="eager",
+                    help="eager/sdpa/flash_attention_2; must be set because "
+                         "create_causal_mask() returns None when "
+                         "config._attn_implementation is unset, which makes the "
+                         "standalone decoder layers attend bidirectionally")
     args = ap.parse_args()
 
     full_cfg = AutoConfig.from_pretrained(args.model)
+    # MUST be set before create_causal_mask(): it returns None when
+    # config._attn_implementation is unset, and a standalone decoder layer given
+    # attention_mask=None then attends BIDIRECTIONALLY, silently producing a
+    # non-causal imatrix for attn_output (and everything downstream of it).
+    full_cfg._attn_implementation = args.attn_impl
     cfg = full_cfg.get_text_config()
+    cfg._attn_implementation = args.attn_impl
     dev = args.device
     dtype = torch.bfloat16 if dev == "cuda" else torch.float32
     reader = ShardReader(args.model)
@@ -92,42 +185,17 @@ def main():
           f"prefix={P} dtype={dtype}")
 
     acc = {}
-    def ensure(name, nmat, nin):
-        if name not in acc:
-            acc[name] = {"sums": np.zeros((nmat, nin), np.float64), "counts": np.zeros(nmat, np.int64)}
-        return acc[name]
-
-    def hook_linear(mod, names):
-        def pre(m, a, names=names):
-            x = a[0].detach().float().reshape(-1, a[0].shape[-1])
-            s = (x * x).sum(0).double().cpu().numpy()
-            for nm in names:
-                e = ensure(nm, 1, x.shape[-1]); e["sums"][0] += s; e["counts"][0] += x.shape[0]
-        return mod.register_forward_pre_hook(pre)
-
-    def hook_experts(mod, blk):
-        gate_n, up_n, down_n = f"{blk}.ffn_gate_exps.weight", f"{blk}.ffn_up_exps.weight", f"{blk}.ffn_down_exps.weight"
-        def pre(m, a):
-            E = m.num_experts
-            X = a[0].detach().view(E, -1, m.hidden_size)            # [E,T,H] (router-scaled)
-            xin = X.float()
-            s_in = (xin * xin).sum(1).double().cpu().numpy()        # [E,H]  gate/up input stat
-            cnt = (xin.abs().sum(-1) > 0).sum(1).cpu().numpy()      # [E]    nonzero (routed) rows
-            for nm in (gate_n, up_n):
-                e = ensure(nm, E, m.hidden_size); e["sums"] += s_in; e["counts"] += cnt
-            # recompute gated intermediate to get down_proj input
-            gate_up = torch.bmm(X.to(m.gate_up_proj.dtype), m.gate_up_proj)
-            gate, up = gate_up.chunk(2, dim=-1)
-            inter = (up * m.act_fn(gate)).float()                   # [E,T,inter]
-            s_dn = (inter * inter).sum(1).double().cpu().numpy()    # [E,inter]
-            e = ensure(down_n, E, inter.shape[-1]); e["sums"] += s_dn; e["counts"] += cnt
-        return mod.register_forward_pre_hook(pre)
+    ensure = make_ensure(acc)
+    # Llama4TextMoe.forward runs the router BEFORE the experts, so a forward hook on
+    # the router lands the exact top-k selection here in time for the experts hook.
+    sel = {}
 
     # tokenize + window
     tok = AutoTokenizer.from_pretrained(args.model)
-    ids = tok(open(args.calib, encoding="utf-8", errors="ignore").read(), return_tensors="pt").input_ids[0]
-    nch = min(args.chunks, ids.shape[0] // args.ctx)
-    chunks = torch.stack([ids[c*args.ctx:(c+1)*args.ctx] for c in range(nch)])
+    chunks, calib_info = load_calibration_chunks(tok, args.calib, args.chunks, args.ctx,
+                                                add_bos=args.bos_per_chunk)
+    nch = chunks.shape[0]
+    print(f"calib: {calib_info}")
     print(f"chunks={nch} ctx={args.ctx}")
 
     # embed -> hidden cache (CPU); Llama4 has no embedding_multiplier
@@ -155,11 +223,15 @@ def main():
                 blk = f"blk.{i}"
                 for rel, mod in L.named_modules():
                     if isinstance(mod, Llama4TextExperts):
-                        handles.append(hook_experts(mod, blk))
-                    else:
-                        names = map_name(rel, blk)
-                        if names:
-                            handles.append(hook_linear(mod, names))
+                        handles.append(hook_experts(mod, blk, ensure, sel))
+                        continue
+                    if isinstance(mod, Llama4Router):
+                        # router doubles as ffn_gate_inp (input stat) and as the source
+                        # of the exact expert selection the experts hook needs
+                        handles.append(hook_router_select(mod, blk, sel))
+                    names = map_name(rel, blk)
+                    if names:
+                        handles.append(hook_linear(mod, names, ensure))
             for c in range(nch):
                 h = hid[c:c+1].to(dev)
                 for i, L in layers:
@@ -167,7 +239,10 @@ def main():
                           past_key_values=None, use_cache=False, position_embeddings=pos_emb)
                 hid[c:c+1] = h.to(hid.dtype).cpu()
             for hh in handles: hh.remove()
-            for _, L in layers: del L
+            # Drop EVERY reference to the band's modules before empty_cache(), or the
+            # cache release is a no-op: the hook closures and `layers` keep them alive
+            # and `del L` only unbinds the loop variable.
+            handles.clear(); layers.clear()
             if dev == "cuda": torch.cuda.empty_cache()
             print(f"  band {band[0]}-{band[-1]} done")
 

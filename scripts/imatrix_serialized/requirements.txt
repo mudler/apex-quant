@@ -5,12 +5,24 @@
 #
 # Optional deps for IMATRIX_BACKEND=serialized only (not needed for the default llama backend).
 #
-# transformers API note — two generator variants ship, pick by installed version:
-#   * transformers 5.5.x  -> serialized_gen.py / gen_imatrix.py
-#                            (GraniteMoeHybridParallelExperts)
-#   * transformers 5.14+   -> serialized_gen_t514.py / _t514_fast.py / gen_imatrix_t514.py
-#                            (GraniteMoeHybridExperts; _fast is VRAM-bounded)
-# Either line works; install the one matching your torch/CUDA stack.
+# transformers: there is NO single version that runs every generator, because the
+# arch modules were refactored at different times. Do not read the ranges below as a
+# version to pin globally -- dispatch.py probes the INSTALLED transformers for the
+# symbols each variant imports and picks a variant that works (or tells you what is
+# missing), so install whichever matches the model you are quantizing:
+#
+#   arch (config.json model_type)  generator                     needs
+#   -----------------------------  ----------------------------  --------------------------
+#   granitemoehybrid               serialized_gen.py             5.5.x (GraniteMoeHybridParallelExperts)
+#   granitemoehybrid               serialized_gen_t514[_fast].py >= 5.14 (GraniteMoeHybridExperts)
+#   qwen3_5_moe                    serialized_gen_qwen35.py      >= 5.5 (Qwen3_5MoeExperts)
+#   llama4                         serialized_gen_llama4.py      >= 5.5 (Llama4TextExperts)
+#   glm4_moe                       glm4moe_serialized_gen.py     a version with fused Glm4MoeExperts
+#
+# `transformers>=5.5` below is a FLOOR, not a claim that any 5.5+ runs everything:
+# on 5.5.x the Granite path resolves to serialized_gen.py and glm4_moe is unavailable.
+# Check what your install supports with:
+#   python3 scripts/imatrix_serialized/dispatch.py --model <hf_dir> --print-script
 torch>=2.4
 transformers>=5.5
 accelerate>=1.0
