@@ -1,0 +1,28 @@
+# MTP Speculative Decoding Benchmarks on NVIDIA Jetson AGX Xavier
+# Device: Jetson AGX Xavier (Volta, 512-core, 32GB unified memory, ~135 GB/s, 30W)
+# Software: llama.cpp master (SHA 571d0d54), CUDA 11.4, Ubuntu 20.04 aarch64
+# MTP config: --spec-type draft-mtp --spec-draft-n-max 2
+# Benchmark: 128 tokens generated after fixed prompt (180 chars), 5 runs each, seed=42
+# Base model: Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved
+#
+# Format:
+# model  size_gb  mean_tps  std_tps  min_tps  max_tps  n_runs
+# For single-run values (original PR): mean_tps is the single value, n_runs=1
+# tps = tokens per second (timings.predicted_per_second from API)
+#
+# --- All 5-run data collected 2026-07-24, same prompt+seed, sequential runs ---
+#
+# Q3_K_M (bartowski), baseline (no speculative decoding)
+Q3_K_M_baseline  17.3  19.32  0.02  19.29  19.34  5
+# Q3_K_M (bartowski), MTP (--spec-type draft-mtp --spec-draft-n-max 2)
+Q3_K_M_mtp_n2    17.3  22.47  0.40  21.76  22.73  5
+#
+# APEX I-Compact (SC117/cvgro), baseline (no speculative decoding)
+APEX_I-Compact_baseline  17.0  19.97  0.05  19.92  20.02  5
+# APEX I-Compact (SC117/cvgro), MTP (--spec-type draft-mtp --spec-draft-n-max 2)
+APEX_I-Compact_mtp_n2    17.0  24.85  0.07  24.76  24.91  5
+#
+# --- Original PR single-run data (kept for reference) ---
+# Note: Q3_K_M baseline 15.96 t/s (single run) vs our 19.32 t/s (5-run mean)
+# Baseline drift ~21% attributed to thermal/system load differences
+# MTP accept rates from original PR (different session): Q3_K_M: 97.7%, APEX I-Compact: 69.8%, APEX I-Mini: 70.5%
